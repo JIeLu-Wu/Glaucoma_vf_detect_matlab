@@ -35,7 +35,8 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
         'yLabel', '视野 Y (deg)', ...
         'colorbarLabel', '敏感度样指标', ...
         'drawColorbar', false, ...
-        'showFigure', false);
+        'showFigure', false, ...
+        'fontName', settings.fontName);
 
     reportFiles = AI_write_report_figure(patientInfo, clinicalResult, ...
         eyeResult, mapResult, settings);
@@ -97,6 +98,7 @@ function settings = AI_report_settings()
     settings.normalSensitivity = 80;
     settings.suspectSensitivity = 50;
     settings.severeSensitivity = 20;
+    settings.fontName = '宋体';
 end
 
 function settings = AI_refresh_output_paths(settings)
@@ -370,7 +372,7 @@ end
 function reportFiles = AI_write_report_figure(patientInfo, clinicalResult, eyeResult, mapResult, settings)
     fig = figure('Color', 'w', 'Position', [80, 60, 1650, 1120], ...
         'Visible', 'off');
-    fontName = 'Microsoft YaHei';
+    fontName = settings.fontName;
 
     AI_add_textbox(fig, [0.035, 0.925, 0.45, 0.05], ...
         'DCPM客观视野检测报告', 22, 'bold', fontName);
