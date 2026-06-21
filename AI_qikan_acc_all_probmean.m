@@ -1,5 +1,5 @@
 function results = AI_qikan_acc_all_probmean()
-% 跑结果并计算VFI等指标，将所有概率系数叠加
+% 跑结果并计算VFI等指标，将所有概率系数叠加2
 % AI_QIKAN_ACC_ALL_PROBMEAN Run five simulations with block-mean VF indices.
 %
 % This file does not modify the original qikan_acc_for_*.m files. It keeps
