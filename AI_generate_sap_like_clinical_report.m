@@ -20,7 +20,7 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
     % defaultDataDir:
     %   当前要生成报告的患者数据文件夹。
     %   换患者时，通常只需要把这一行改成新的临床实验文件夹。
-    defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260617丁艳荣';
+    defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260618薛娜';
 
     % defaultResultDir:
     %   所有报告结果的总保存文件夹。
@@ -264,16 +264,31 @@ function settings = AI_report_settings(defaultDataDir, defaultResultDir, existin
     settings.suspectSensitivity = 50;
     settings.severeSensitivity = 20;
 
-    % ==================== 54点指标计算参数 ====================
-    % metricNormalThreshold:
-    %   缺损分数 < 该值，统计为正常点。
-    %   调大：正常点更少，可疑/缺损点更多，判读更敏感。
-    %   调小：正常点更多，判读更保守。
+    % ==================== 指标点数统计阈值 ====================
+    % 每一组阈值都包含normal和defect两个参数：
+    %   缺损分数 < normal：统计为正常点；
+    %   normal <= 缺损分数 < defect：统计为可疑点；
+    %   缺损分数 >= defect：统计为缺损点。
+    %
+    % 为什么拆成4组：
+    %   28点和54点的点位密度不同，左眼和右眼的结果也可能存在系统差异。
+    %   后续如果要分别调阈值，可以只改对应版本/对应眼别，不影响其他结果。
+    %
+    % 目前四组先统一使用原来的阈值：normal=0.10，defect=0.20。
+    settings.metricThreshold.point28.left.normal = 0.10;
+    settings.metricThreshold.point28.left.defect = 0.20;
+    settings.metricThreshold.point28.right.normal = 0.10;
+    settings.metricThreshold.point28.right.defect = 0.20;
+    settings.metricThreshold.point54.left.normal = 0.10;
+    settings.metricThreshold.point54.left.defect = 0.20;
+    settings.metricThreshold.point54.right.normal = 0.10;
+    settings.metricThreshold.point54.right.defect = 0.20;
+
+    % ==================== 54点插值和平滑参数 ====================
+    % metricNormalThreshold/metricDefectThreshold:
+    %   保留为兼容参数和空间平滑参数。
+    %   点数统计请优先修改上面的settings.metricThreshold四组阈值。
     settings.metricNormalThreshold = 0.10;
-    % metricDefectThreshold:
-    %   缺损分数 >= 该值，统计为缺损点。
-    %   调大：缺损点更少，可疑点可能更多。
-    %   调小：缺损点更多，报告更容易显示明确异常。
     settings.metricDefectThreshold = 0.20;
     % metricNeighborRadiusDeg:
     %   空间邻域修正时，把多少度范围内的点看作邻居。
@@ -1210,6 +1225,7 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
     % pointVersion:
     %   'point28'表示真实采集的28点版本；
     %   'point54'表示插值后的SAP 24-2样式54点版本。
+    threshold = AI_get_metric_threshold(settings, eyeName, pointVersion);
     epsVal = 1e-3;
     pointDb = 10 * log10(max(sensitivity, epsVal) ./ 100);
 
@@ -1217,14 +1233,65 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
     metrics.eye = eyeName;
     metrics.pointVersion = pointVersion;
     metrics.pointCount = numel(sensitivity);
+    metrics.normalThreshold = threshold.normal;
+    metrics.defectThreshold = threshold.defect;
     metrics.VFI = AI_round4(mean(sensitivity, 'omitnan'));
     metrics.MD = AI_round4(mean(pointDb, 'omitnan'));
     metrics.PSD = AI_round4(std(pointDb, 1, 'omitnan'));
-    metrics.nNormal = sum(defectScore < settings.metricNormalThreshold);
-    metrics.nSuspect = sum(defectScore >= settings.metricNormalThreshold & ...
-        defectScore < settings.metricDefectThreshold);
-    metrics.nDefect = sum(defectScore >= settings.metricDefectThreshold);
+    metrics.nNormal = sum(defectScore < threshold.normal);
+    metrics.nSuspect = sum(defectScore >= threshold.normal & ...
+        defectScore < threshold.defect);
+    metrics.nDefect = sum(defectScore >= threshold.defect);
     metrics.judgement = AI_eye_judgement(metrics);
+end
+
+function threshold = AI_get_metric_threshold(settings, eyeName, pointVersion)
+    % 读取当前眼别和当前点位版本对应的点数统计阈值。
+    %
+    % eyeName:
+    %   '左眼'或'右眼'。
+    % pointVersion:
+    %   'point28'或'point54'。
+    %
+    % 输出threshold.normal/threshold.defect用于统计正常点、可疑点和缺损点。
+    % 如果某个字段缺失，会退回到旧版全局阈值，避免旧参数结构报错。
+    versionKey = lower(char(pointVersion));
+    switch versionKey
+        case {'point28', '28'}
+            versionKey = 'point28';
+        case {'point54', 'sap54', '54'}
+            versionKey = 'point54';
+        otherwise
+            error('Unsupported pointVersion for threshold: %s', pointVersion);
+    end
+
+    if contains(char(eyeName), '左')
+        eyeKey = 'left';
+    elseif contains(char(eyeName), '右')
+        eyeKey = 'right';
+    else
+        error('Unsupported eyeName for threshold: %s', eyeName);
+    end
+
+    threshold = struct();
+    if isfield(settings, 'metricThreshold') && ...
+            isfield(settings.metricThreshold, versionKey) && ...
+            isfield(settings.metricThreshold.(versionKey), eyeKey)
+        threshold = settings.metricThreshold.(versionKey).(eyeKey);
+    end
+
+    if ~isfield(threshold, 'normal') || isempty(threshold.normal)
+        threshold.normal = settings.metricNormalThreshold;
+    end
+    if ~isfield(threshold, 'defect') || isempty(threshold.defect)
+        threshold.defect = settings.metricDefectThreshold;
+    end
+
+    if threshold.normal >= threshold.defect
+        error(['Metric threshold error: normal threshold must be smaller ', ...
+            'than defect threshold. pointVersion=%s, eyeName=%s'], ...
+            pointVersion, eyeName);
+    end
 end
 
 function judgement = AI_eye_judgement(metrics)
