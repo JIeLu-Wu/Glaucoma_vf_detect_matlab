@@ -1,6 +1,6 @@
 function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
 % 生成类似SAP视野检查的客观视野报告。
-%
+% 
 % 本脚本的主流程：
 %   1. 设置分析参数和输出路径；
 %   2. 读取患者信息；
@@ -11,28 +11,55 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
 %   7. 输出Excel表格和MAT结果文件。
 %
 % Example:
-%   result = AI_generate_sap_like_clinical_report( ...
-%       'D:\0课题\青光眼\data\临床实验\260520xkx');
+%   普通使用时，可以直接在命令行运行：
+%       result = AI_generate_sap_like_clinical_report;
+%   如果临时想指定另一个数据文件夹，也可以运行：
+%       result = AI_generate_sap_like_clinical_report('D:\0课题\青光眼\data\临床实验\260617丁艳荣');
+
+    % ==================== 0. 常用修改区：一般只改这里 ====================
+    % defaultDataDir:
+    %   当前要生成报告的患者数据文件夹。
+    %   换患者时，通常只需要把这一行改成新的临床实验文件夹。
+    defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260629王胜春';
+
+    % defaultResultDir:
+    %   所有报告结果的总保存文件夹。
+    %   程序会在这个文件夹下自动新建 AI_SAP_like_clinical_report\患者姓名1 这样的子文件夹。
+    defaultResultDir = 'D:\0课题\青光眼\结果';
+
+    % existingResultDir:
+    %   如果为空字符串''，程序会新建一个患者姓名+版本号的结果文件夹，并重新跑CNT数据。
+    %   如果填入已有结果文件夹，程序会优先在该文件夹中寻找AI_report_result.mat：
+    %       找到：直接调用已有clinicalResult，重新计算指标、画图并生成报告；
+    %       找不到：使用这个文件夹作为输出位置，重新跑CNT数据。
+    %   这个设置适合“只改了画图/报告代码，想用旧数据重新生成报告”的情况。
+    existingResultDir = '';
+    % existingResultDir = 'D:\0课题\青光眼\结果\AI_SAP_like_clinical_report\丁艳荣1';
 
     % ==================== 1. 实验参数和输出路径 ====================
-    settings = AI_report_settings();
+    % AI_report_settings负责把上面的路径和其他固定参数整理成settings结构体。
+    % 如果你通过函数输入参数传入dataDir，会覆盖上面的defaultDataDir。
+    settings = AI_report_settings(defaultDataDir, defaultResultDir, existingResultDir);
     if nargin >= 1 && ~isempty(dataDir)
         settings.dataDir = char(dataDir);
     end
     settings = AI_parse_inputs(settings, varargin{:});
-    settings = AI_refresh_output_paths(settings);
-
-    if ~exist(settings.outputDir, 'dir')
-        mkdir(settings.outputDir);
-    end
 
     % ==================== 2. 患者基本信息 ====================
     % patientInfo中的字段会显示在最终PNG/PDF报告顶部。
     % 当前逻辑：
     %   1) 优先读取数据文件夹中的患者信息Excel；
     %   2) 如果数据文件夹里没有，就用默认信息新建一个；
-    %   3) 同步复制一份到结果文件夹，方便报告归档。
-    patientInfo = AI_load_or_create_patient_info(settings);
+    %   3) 根据患者姓名创建/选择结果文件夹；
+    %   4) 同步复制一份到结果文件夹，方便报告归档。
+    settings = AI_refresh_data_paths(settings);
+    patientInfo = AI_load_or_create_patient_info_from_data(settings);
+    settings = AI_prepare_output_folder(settings, patientInfo);
+    settings = AI_refresh_output_paths(settings);
+    if ~exist(settings.outputDir, 'dir')
+        mkdir(settings.outputDir);
+    end
+    AI_sync_patient_info_to_output(patientInfo, settings);
 
     % ==================== 3. 跑完全部数据，得到28个检测点概率结果 ====================
     % clinicalResult.pointTable保存每个真实检测点的三分类概率：
@@ -40,12 +67,7 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
     %   pLeftAbnormal:  左眼异常概率样评分；
     %   pRightAbnormal: 右眼异常概率样评分。
     % 注意：这里不计算VFI、MD和缺损点数，只负责把所有检测点跑完。
-    if settings.useExistingClinicalResult && exist(settings.existingClinicalMat, 'file')
-        clinicalResult = AI_load_existing_clinical_result(settings.existingClinicalMat);
-    else
-        % 可以修改clinicalResult中的表格中3列概率值。
-        clinicalResult = AI_process_clinical_folder(settings);
-    end
+    clinicalResult = AI_get_or_create_clinical_result(settings);
 
     % ==================== 4. 整理完整28点结果 ====================
     % pointResult28把后续计算会用到的28点变量集中整理好：
@@ -69,7 +91,11 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
     % 因此28点到54点的转换只在本脚本中完成，不再放到绘图脚本内部。
     mapDir28 = fullfile(settings.mapDir, 'point28');
     mapDir54 = fullfile(settings.mapDir, 'point54');
-
+    if a==0
+        a = 1
+    else 
+        
+    end
     mapResult28 = AI_plot_sap_like_vf_report(eyeResult.defectScore28, ...
         'outputDir', mapDir28, ...
         'filePrefix', [settings.filePrefix, '_point28'], ...
@@ -87,14 +113,16 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
         'drawColorbar', false, ...
         'showFigure', false);
 
-    % ==================== 6. 绘制左右眼视野图 ====================
-    % 这里直接把54点缺损分数传给绘图脚本。
-    % 这样报告图、VFI/MD和正常/可疑/缺损点数使用的是同一套54点结果。
+    % ==================== 6.2 绘制左右眼54点视野图 ====================
+    % 这里仍然传入真实的54点缺损分数，不人为修改任何检测点数值。
+    % 生理盲点只在AI_plot_sap_like_vf_report内部作为一簇黑点叠加显示，
+    % 因此不会影响VFI、MD、PSD、点数统计，也不会写入Excel/MAT结果。
     mapResult54 = AI_plot_sap_like_vf_report(eyeResult.defectScore54, ...
         'outputDir', mapDir54, ...
         'filePrefix', [settings.filePrefix, '_point54'], ...
         'inputPointMode', 'sap54', ...
         'inputValueType', 'defectScore', ...
+        'drawBlindSpotDotCluster', true, ...
         'leftTitle', '左眼视野灰阶图（54点）', ...
         'rightTitle', '右眼视野灰阶图（54点）', ...
         'leftDensityTitle', '左眼密度图（54点）', ...
@@ -144,7 +172,29 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
     fprintf('Saved MAT result: %s\n', settings.matFile);
 end
 
-function settings = AI_report_settings()
+function settings = AI_report_settings(defaultDataDir, defaultResultDir, existingResultDir)
+    % 汇总报告生成所需的默认参数。
+    %
+    % 输入变量说明：
+    %   defaultDataDir:
+    %       主函数最前面“常用修改区”中设置的患者数据文件夹。
+    %   defaultResultDir:
+    %       主函数最前面“常用修改区”中设置的总结果文件夹。
+    %   existingResultDir:
+    %       主函数最前面“常用修改区”中设置的已有结果文件夹。
+    %
+    % 这里主要放相对固定的分析参数和报告参数。
+    % 平时换患者、换输出总目录，优先改主函数最前面的“常用修改区”。
+    if nargin < 1 || isempty(defaultDataDir)
+        defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260617丁艳荣';
+    end
+    if nargin < 2 || isempty(defaultResultDir)
+        defaultResultDir = 'D:\0课题\青光眼\结果';
+    end
+    if nargin < 3 || isempty(existingResultDir)
+        existingResultDir = '';
+    end
+
     % ==================== 基础分析参数 ====================
     % fs: 脑电重采样频率，单位Hz。
     settings.fs = 250;
@@ -169,18 +219,22 @@ function settings = AI_report_settings()
     settings.tempType = [1,2; 2,1; 3,4; 4,3];
 
     % ==================== 默认数据路径和结果路径 ====================
-    % dataDir: 当前患者临床实验数据文件夹。
-    settings.dataDir = char([68 58 92 48 35838 39064 92 38738 20809 30524 ...
-        92 100 97 116 97 92 20020 24202 23454 39564 92 50 54 48 53 50 48 120 107 120]);
-    % resultDir: 所有报告结果的总输出文件夹。
-    settings.resultDir = char([68 58 92 48 35838 39064 92 38738 20809 30524 ...
-        92 32467 26524]);
+    % dataDir:
+    %   当前患者临床实验数据文件夹。它来自主函数最前面的defaultDataDir。
+    settings.dataDir = char(defaultDataDir);
+    % resultDir:
+    %   所有报告结果的总输出文件夹。它来自主函数最前面的defaultResultDir。
+    settings.resultDir = char(defaultResultDir);
 
-    % filePrefix: 本次报告输出文件名前缀，用时间戳避免覆盖旧结果。
-    stamp = datestr(now, 'yyyymmdd_HHMMSS');
-    settings.filePrefix = ['AI_SAP_like_report_', stamp];
-    % outputDir: 本次报告专用输出文件夹。
-    settings.outputDir = fullfile(settings.resultDir, 'AI_SAP_like_clinical_report', settings.filePrefix);
+    % existingResultDir:
+    %   如果非空，优先使用这个已有结果文件夹中的AI_report_result.mat。
+    settings.existingResultDir = char(existingResultDir);
+    % filePrefix:
+    %   单独视野图文件名前缀。后面会根据最终结果文件夹名自动刷新。
+    settings.filePrefix = 'AI_SAP_like_report';
+    % outputDir:
+    %   本次报告专用输出文件夹。这里先留空，后面读取患者姓名后再确定。
+    settings.outputDir = '';
     % mapDir: 存放单独左右眼视野图的子文件夹。
     settings.mapDir = fullfile(settings.outputDir, 'vf_maps');
     % patientInfoFileName: 患者信息Excel文件名。
@@ -206,28 +260,41 @@ function settings = AI_report_settings()
     settings.defaultPatientInfo.sex = 'None';
     settings.defaultPatientInfo.age = 'None';
     settings.defaultPatientInfo.examDate = datestr(now, 'yyyy-mm-dd');
-    settings.defaultPatientInfo.diagnosis = 'None';
     settings.defaultPatientInfo.operator = 'None';
-    settings.defaultPatientInfo.dataFolder = settings.dataDir;
     settings.defaultPatientInfo.notes = '研究性客观视野检测结果，仅供参考，实际视野状态以临床检查报告为准';
 
     % ==================== 报告判读阈值 ====================
     % normalSensitivity/suspectSensitivity/severeSensitivity:
     % 目前主要保留为后续扩展用。当前左右眼判断主要由VFI阈值完成。
-    settings.normalSensitivity = 80;
+    settings.normalSensitivity = 90;
     settings.suspectSensitivity = 50;
-    settings.severeSensitivity = 20;
+    settings.severeSensitivity = 0;
 
-    % ==================== 54点指标计算参数 ====================
-    % metricNormalThreshold:
-    %   缺损分数 < 该值，统计为正常点。
-    %   调大：正常点更少，可疑/缺损点更多，判读更敏感。
-    %   调小：正常点更多，判读更保守。
+    % ==================== 指标点数统计阈值 ====================
+    % 每一组阈值都包含normal和defect两个参数：
+    %   缺损分数 < normal：统计为正常点；
+    %   normal <= 缺损分数 < defect：统计为可疑点；
+    %   缺损分数 >= defect：统计为缺损点。
+    %
+    % 为什么拆成4组：
+    %   28点和54点的点位密度不同，左眼和右眼的结果也可能存在系统差异。
+    %   后续如果要分别调阈值，可以只改对应版本/对应眼别，不影响其他结果。
+    %
+    % 目前四组先统一使用原来的阈值：normal=0.10，defect=0.20。
+    settings.metricThreshold.point28.left.normal = 0.10;
+    settings.metricThreshold.point28.left.defect = 0.20;
+    settings.metricThreshold.point28.right.normal = 0.10;
+    settings.metricThreshold.point28.right.defect = 0.20;
+    settings.metricThreshold.point54.left.normal = 0.10;
+    settings.metricThreshold.point54.left.defect = 0.20;
+    settings.metricThreshold.point54.right.normal = 0.10;
+    settings.metricThreshold.point54.right.defect = 0.20;
+
+    % ==================== 54点插值和平滑参数 ====================
+    % metricNormalThreshold/metricDefectThreshold:
+    %   保留为兼容参数和空间平滑参数。
+    %   点数统计请优先修改上面的settings.metricThreshold四组阈值。
     settings.metricNormalThreshold = 0.10;
-    % metricDefectThreshold:
-    %   缺损分数 >= 该值，统计为缺损点。
-    %   调大：缺损点更少，可疑点可能更多。
-    %   调小：缺损点更多，报告更容易显示明确异常。
     settings.metricDefectThreshold = 0.20;
     % metricNeighborRadiusDeg:
     %   空间邻域修正时，把多少度范围内的点看作邻居。
@@ -290,6 +357,13 @@ function settings = AI_refresh_output_paths(settings)
     settings.reportPdf = fullfile(settings.outputDir, 'AI_SAP_like_report.pdf');
 end
 
+function settings = AI_refresh_data_paths(settings)
+    % 只刷新和数据文件夹相关的路径。
+    %
+    % 这一步在确定输出文件夹之前执行，因为患者姓名需要先从dataDir里的info.xlsx读取。
+    settings.dataPatientInfoFile = fullfile(settings.dataDir, settings.patientInfoFileName);
+end
+
 function settings = AI_parse_inputs(settings, varargin)
     % 读取用户输入的可选参数。
     %
@@ -316,14 +390,12 @@ function settings = AI_parse_inputs(settings, varargin)
     end
 end
 
-function patientInfo = AI_load_or_create_patient_info(settings)
-    % 读取或创建患者基本信息。
+function patientInfo = AI_load_or_create_patient_info_from_data(settings)
+    % 从数据文件夹读取或创建患者基本信息。
     %
     % 输入：
     %   settings.dataPatientInfoFile:
     %       数据文件夹中的患者信息Excel。以后建议优先修改这一份。
-    %   settings.patientInfoFile:
-    %       结果文件夹中的患者信息Excel。程序会自动同步保存，方便报告归档。
     %   settings.defaultPatientInfo:
     %       如果数据文件夹中还没有患者信息Excel，就用这里的默认值创建。
     %
@@ -331,14 +403,10 @@ function patientInfo = AI_load_or_create_patient_info(settings)
     %   patientInfo:
     %       结构体，包含patientId、name、sex、age、examDate等字段。
 
-    % ==================== 1. 确认数据文件夹和结果文件夹存在 ====================
+    % ==================== 1. 确认数据文件夹存在 ====================
     dataInfoDir = fileparts(settings.dataPatientInfoFile);
-    resultInfoDir = fileparts(settings.patientInfoFile);
     if ~exist(dataInfoDir, 'dir')
         mkdir(dataInfoDir);
-    end
-    if ~exist(resultInfoDir, 'dir')
-        mkdir(resultInfoDir);
     end
 
     % ==================== 2. 如果数据文件夹中没有患者信息表，就创建默认表 ====================
@@ -350,16 +418,88 @@ function patientInfo = AI_load_or_create_patient_info(settings)
     % ==================== 3. 读取数据文件夹中的患者信息表 ====================
     infoTable = readtable(settings.dataPatientInfoFile, 'Sheet', 'PatientInfo', 'TextType', 'string');
 
-    % ==================== 4. 同步复制到结果文件夹，保证报告结果可追溯 ====================
-    writetable(infoTable, settings.patientInfoFile, 'Sheet', 'PatientInfo');
-
-    % ==================== 5. 将表格转成结构体，方便后面写入报告文字 ====================
+    % ==================== 4. 将表格转成结构体，方便后面写入报告文字 ====================
     patientInfo = struct();
     for i = 1:height(infoTable)
         key = char(infoTable.fieldKey(i));
         patientInfo.(key) = char(infoTable.fieldValue(i));
     end
     patientInfo.table = infoTable;
+end
+
+function AI_sync_patient_info_to_output(patientInfo, settings)
+    % 将患者信息表同步保存到结果文件夹。
+    %
+    % 这样即使以后移动结果文件夹，也能知道该报告对应的患者信息。
+    resultInfoDir = fileparts(settings.patientInfoFile);
+    if ~exist(resultInfoDir, 'dir')
+        mkdir(resultInfoDir);
+    end
+    writetable(patientInfo.table, settings.patientInfoFile, 'Sheet', 'PatientInfo');
+end
+
+function settings = AI_prepare_output_folder(settings, patientInfo)
+    % 根据用户设置和患者姓名确定本次输出文件夹。
+    %
+    % 规则：
+    %   1) 如果settings.existingResultDir非空，直接使用这个已有结果文件夹。
+    %      后面会在这个文件夹中寻找AI_report_result.mat。
+    %   2) 如果用户通过'name-value'传入了outputDir，也直接使用该文件夹。
+    %   3) 如果两者都没有，就按患者姓名自动新建版本文件夹：
+    %      例如：D:\...\AI_SAP_like_clinical_report\丁艳荣1、丁艳荣2、丁艳荣3。
+    if ~isempty(strtrim(settings.existingResultDir))
+        settings.outputDir = char(settings.existingResultDir);
+    elseif ~isempty(strtrim(settings.outputDir))
+        settings.outputDir = char(settings.outputDir);
+    else
+        patientName = AI_get_info(patientInfo, 'name');
+        if isempty(strtrim(patientName)) || strcmpi(strtrim(patientName), 'None')
+            patientName = AI_get_info(patientInfo, 'patientId');
+        end
+        if isempty(strtrim(patientName)) || strcmpi(strtrim(patientName), 'None')
+            patientName = 'unknown';
+        end
+
+        safePatientName = AI_safe_folder_name(patientName);
+        reportRootDir = fullfile(settings.resultDir, 'AI_SAP_like_clinical_report');
+        settings.outputDir = AI_next_patient_version_folder(reportRootDir, safePatientName);
+    end
+
+    [~, outputFolderName] = fileparts(settings.outputDir);
+    safeOutputName = AI_safe_folder_name(outputFolderName);
+    settings.filePrefix = ['AI_SAP_like_report_', safeOutputName];
+end
+
+function folderPath = AI_next_patient_version_folder(reportRootDir, safePatientName)
+    % 生成“患者姓名+版本号”的新结果文件夹路径。
+    %
+    % 如果丁艳荣1已存在，就尝试丁艳荣2；依次类推。
+    if ~exist(reportRootDir, 'dir')
+        mkdir(reportRootDir);
+    end
+
+    version_i = 1;
+    while true
+        folderName = sprintf('%s%d', safePatientName, version_i);
+        folderPath = fullfile(reportRootDir, folderName);
+        if ~exist(folderPath, 'dir')
+            return;
+        end
+        version_i = version_i + 1;
+    end
+end
+
+function safeName = AI_safe_folder_name(rawName)
+    % 将患者姓名转换成可以作为Windows文件夹名的字符串。
+    %
+    % 主要去掉 \ / : * ? " < > | 这些Windows不允许出现在文件名中的字符。
+    safeName = char(string(rawName));
+    safeName = strtrim(safeName);
+    safeName = regexprep(safeName, '[\\/:*?"<>|]', '_');
+    safeName = regexprep(safeName, '\s+', '');
+    if isempty(safeName)
+        safeName = 'unknown';
+    end
 end
 
 function infoTable = AI_default_patient_info_table(settings)
@@ -372,28 +512,110 @@ function infoTable = AI_default_patient_info_table(settings)
     % fieldValue:
     %   真正显示在报告中的内容，你后续主要修改这一列。
     fieldKey = {'patientId'; 'name'; 'sex'; 'age'; 'examDate'; ...
-        'diagnosis'; 'operator'; 'dataFolder'; 'notes'};
+        'operator'; 'notes'};
     fieldName = {'患者编号'; '姓名'; '性别'; '年龄'; '检查日期'; ...
-        '临床诊断'; '检查人员'; '数据文件夹'; '备注'};
+        '检查人员'; '备注'};
     fieldValue = { ...
         settings.defaultPatientInfo.patientId; ...
         settings.defaultPatientInfo.name; ...
         settings.defaultPatientInfo.sex; ...
         settings.defaultPatientInfo.age; ...
         settings.defaultPatientInfo.examDate; ...
-        settings.defaultPatientInfo.diagnosis; ...
         settings.defaultPatientInfo.operator; ...
-        settings.defaultPatientInfo.dataFolder; ...
         settings.defaultPatientInfo.notes};
     infoTable = table(fieldKey, fieldName, fieldValue);
 end
 
+function clinicalResult = AI_get_or_create_clinical_result(settings)
+    % 获取本次报告要使用的clinicalResult。
+    %
+    % 优先级：
+    %   1) 如果settings.outputDir里已有AI_report_result.mat，就从里面读取clinicalResult。
+    %      这适合“修改画图代码后，复用旧检测结果重新生成报告”。
+    %   2) 如果settings.useExistingClinicalResult为true，并且settings.existingClinicalMat存在，
+    %      就读取这个外部临床结果文件。
+    %   3) 以上都没有，就重新从CNT数据跑DCPM检测。
+    if exist(settings.matFile, 'file')
+        clinicalResult = AI_load_clinical_result_from_report_mat(settings.matFile);
+        fprintf('\nLoaded existing clinicalResult from: %s\n', settings.matFile);
+        return;
+    end
+
+    if settings.useExistingClinicalResult && exist(settings.existingClinicalMat, 'file')
+        clinicalResult = AI_load_existing_clinical_result(settings.existingClinicalMat);
+        fprintf('\nLoaded existing clinicalResult from: %s\n', settings.existingClinicalMat);
+        return;
+    end
+
+    fprintf('\nNo existing clinicalResult found. Start processing CNT data in: %s\n', settings.dataDir);
+    clinicalResult = AI_process_clinical_folder(settings);
+end
+
+function clinicalResult = AI_load_clinical_result_from_report_mat(matFile)
+    % 从本脚本保存的AI_report_result.mat中读取clinicalResult。
+    %
+    % AI_report_result.mat里保存的是总result结构体，clinicalResult是其中一个字段。
+    loaded = load(matFile, 'result');
+    if ~isfield(loaded, 'result') || ~isfield(loaded.result, 'clinicalResult')
+        error('MAT file does not contain result.clinicalResult: %s', matFile);
+    end
+    clinicalResult = loaded.result.clinicalResult;
+    clinicalResult = AI_ensure_clinical_result_eye_mapping(clinicalResult);
+end
+
 function clinicalResult = AI_load_existing_clinical_result(matFile)
+    % 读取外部已有临床检测结果。
+    %
+    % 兼容两种MAT格式：
+    %   1) result本身就是clinicalResult；
+    %   2) result.clinicalResult中保存clinicalResult。
     loaded = load(matFile, 'result');
     if ~isfield(loaded, 'result')
         error('MAT file does not contain variable result: %s', matFile);
     end
-    clinicalResult = loaded.result;
+    if isfield(loaded.result, 'clinicalResult')
+        clinicalResult = loaded.result.clinicalResult;
+    else
+        clinicalResult = loaded.result;
+    end
+    clinicalResult = AI_ensure_clinical_result_eye_mapping(clinicalResult);
+end
+
+function clinicalResult = AI_ensure_clinical_result_eye_mapping(clinicalResult)
+    % 兼容旧版本保存的clinicalResult。
+    %
+    % 旧版本曾经把Prob_calculate第2/第3类直接写成左眼/右眼异常，
+    % 但在当前BM双眼对称刺激逻辑下，第2/第3类的实际眼别应当互换。
+    % 新版本保存clinicalResult时会带有eyeProbabilityMappingVersion字段。
+    % 如果读取到的旧结果没有这个字段，就自动交换pLeftAbnormal和pRightAbnormal。
+    targetVersion = 'BM_template_to_eye_v2_normal_left_right';
+    if isfield(clinicalResult, 'eyeProbabilityMappingVersion') && ...
+            strcmp(clinicalResult.eyeProbabilityMappingVersion, targetVersion)
+        return;
+    end
+
+    if isfield(clinicalResult, 'pointTable') && ...
+            all(ismember({'pLeftAbnormal', 'pRightAbnormal'}, ...
+            clinicalResult.pointTable.Properties.VariableNames))
+        oldLeft = clinicalResult.pointTable.pLeftAbnormal;
+        clinicalResult.pointTable.pLeftAbnormal = clinicalResult.pointTable.pRightAbnormal;
+        clinicalResult.pointTable.pRightAbnormal = oldLeft;
+
+        if all(ismember({'pNormal', 'predictedLabel', 'predictedState'}, ...
+                clinicalResult.pointTable.Properties.VariableNames))
+            probabilityMat = [clinicalResult.pointTable.pNormal, ...
+                clinicalResult.pointTable.pLeftAbnormal, ...
+                clinicalResult.pointTable.pRightAbnormal];
+            [~, predictedLabel] = max(probabilityMat, [], 2);
+            clinicalResult.pointTable.predictedLabel = predictedLabel;
+            clinicalResult.pointTable.predictedState = arrayfun( ...
+                @AI_label_name, predictedLabel, 'UniformOutput', false);
+        end
+
+        fprintf('\nConverted old clinicalResult eye probability mapping to: %s\n', targetVersion);
+    end
+
+    clinicalResult.eyeProbabilityMappingVersion = targetVersion;
 end
 
 function clinicalResult = AI_process_clinical_folder(settings)
@@ -492,6 +714,9 @@ function clinicalResult = AI_process_clinical_folder(settings)
         'VariableNames', AI_point_table_names());
     clinicalResult.groupTable = cell2table(groupRows, 'VariableNames', AI_group_table_names());
     clinicalResult.settings = settings;
+    % 标记当前clinicalResult已经使用新的眼别概率顺序：
+    %   [正常；左眼异常；右眼异常]。
+    clinicalResult.eyeProbabilityMappingVersion = 'BM_template_to_eye_v2_normal_left_right';
 end
 
 function nums = AI_file_numbers(fileNames, prefix)
@@ -548,9 +773,21 @@ function groupResult = AI_process_one_group(group_i, trainFile, testFile, settin
         testDataOnePoint = testData(settings.chanList, :, ...
             1:settings.testTrialNum, point_i);
 
-        [~, probDv] = glc_detection_prob(templateData, testDataOnePoint, settings.foldNum);
-        probDvAll(:, :, point_i) = probDv;
-        blockProbAll(:, :, point_i) = AI_block_average_prob(probDv, settings.probMeanBlockSize);
+        [~, templateProbDv] = glc_detection_prob(templateData, testDataOnePoint, settings.foldNum);
+
+        % Prob_calculate原始输出的三行不是直接的“正常/左眼异常/右眼异常”。
+        % 它的第2行表示“更像模板1、不像模板2”，第3行表示“不像模板1、更像模板2”。
+        % 在当前BM双眼对称刺激中：
+        %   模板1 = 当前测试点对应的左眼刺激位置；
+        %   模板2 = 当前测试点镜像位置，对应右眼仍能看到的刺激位置。
+        % 因此：
+        %   第2行实际表示右眼缺损后，只剩左眼模板1成分；
+        %   第3行实际表示左眼缺损后，只剩右眼模板2成分。
+        % 这里统一转换成报告使用的眼别顺序：[正常；左眼异常；右眼异常]。
+        eyeProbDv = AI_template_prob_to_eye_prob(templateProbDv);
+
+        probDvAll(:, :, point_i) = eyeProbDv;
+        blockProbAll(:, :, point_i) = AI_block_average_prob(eyeProbDv, settings.probMeanBlockSize);
 
         % pointProbability是当前检测点的最终三分类概率样评分。
         % 先对若干block求平均，再归一化为三类之和等于1。
@@ -605,6 +842,34 @@ function blockProb = AI_block_average_prob(probDv, blockSize)
     end
 end
 
+function eyeProb = AI_template_prob_to_eye_prob(templateProb)
+    % 将Prob_calculate的模板顺序概率转换为报告使用的眼别顺序概率。
+    %
+    % templateProb:
+    %   3 x N矩阵，来自Prob_calculate。
+    %   第1行：正常，即模板1和模板2都存在；
+    %   第2行：模板1存在、模板2缺失；
+    %   第3行：模板1缺失、模板2存在。
+    %
+    % 为什么第2/第3行要互换：
+    %   当前临床检测使用BM双眼对称刺激。以某个测试点为例：
+    %       模板1 = 当前点位置，对应左眼看到的刺激成分；
+    %       模板2 = 镜像点位置，对应右眼看到的刺激成分。
+    %   如果左眼该点缺损，测试信号会退化为“只剩右眼模板2”，所以对应templateProb第3行。
+    %   如果右眼镜像点缺损，测试信号会退化为“只剩左眼模板1”，所以对应templateProb第2行。
+    %
+    % eyeProb:
+    %   3 x N矩阵，统一转换为报告和表格使用的顺序：
+    %       第1行：正常概率；
+    %       第2行：左眼异常概率；
+    %       第3行：右眼异常概率。
+    if size(templateProb, 1) ~= 3
+        error('templateProb must be a 3 x N matrix.');
+    end
+
+    eyeProb = templateProb([1, 3, 2], :);
+end
+
 function pointResult28 = AI_collect_28_point_results(pointTable)
     % 整理28个真实检测点的完整结果。
     %
@@ -636,10 +901,21 @@ function pointResult28 = AI_collect_28_point_results(pointTable)
     defectScore28 = AI_defect_score_from_prob(probability28);
 
     % ==================== 3. 计算左右眼敏感度样指标 ====================
-    % 左眼敏感度样指标 = 正常概率 + 右眼异常概率。
-    % 因为如果模型认为“右眼异常”，则左眼相对更可能是正常的。
-    leftSensitivity28 = 100 * (probabilityNormal28 + probabilityRight28);
-    rightSensitivity28 = 100 * (probabilityNormal28 + probabilityLeft28);
+    % 敏感度样指标表示“该眼越接近正常”的程度，范围0-100。
+    %
+    % 三分类概率的含义是：
+    %   probabilityNormal28: 正常概率；
+    %   probabilityLeft28:   左眼异常概率；
+    %   probabilityRight28:  右眼异常概率。
+    %
+    % 因此：
+    %   左眼敏感度 = 1 - 左眼异常概率；
+    %   右眼敏感度 = 1 - 右眼异常概率。
+    %
+    % 这和旧写法“左眼=正常概率+右眼异常概率、右眼=正常概率+左眼异常概率”等价，
+    % 因为三类概率之和为1。但下面这种写法更直观，不容易误以为左右眼反了。
+    leftSensitivity28 = 100 * (1 - probabilityLeft28);
+    rightSensitivity28 = 100 * (1 - probabilityRight28);
     sensitivity28 = max(0, min(100, [leftSensitivity28, rightSensitivity28]));
 
     % ==================== 4. 保存整理后的28点结果 ====================
@@ -955,6 +1231,7 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
     % pointVersion:
     %   'point28'表示真实采集的28点版本；
     %   'point54'表示插值后的SAP 24-2样式54点版本。
+    threshold = AI_get_metric_threshold(settings, eyeName, pointVersion);
     epsVal = 1e-3;
     pointDb = 10 * log10(max(sensitivity, epsVal) ./ 100);
 
@@ -962,14 +1239,65 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
     metrics.eye = eyeName;
     metrics.pointVersion = pointVersion;
     metrics.pointCount = numel(sensitivity);
+    metrics.normalThreshold = threshold.normal;
+    metrics.defectThreshold = threshold.defect;
     metrics.VFI = AI_round4(mean(sensitivity, 'omitnan'));
     metrics.MD = AI_round4(mean(pointDb, 'omitnan'));
     metrics.PSD = AI_round4(std(pointDb, 1, 'omitnan'));
-    metrics.nNormal = sum(defectScore < settings.metricNormalThreshold);
-    metrics.nSuspect = sum(defectScore >= settings.metricNormalThreshold & ...
-        defectScore < settings.metricDefectThreshold);
-    metrics.nDefect = sum(defectScore >= settings.metricDefectThreshold);
+    metrics.nNormal = sum(defectScore < threshold.normal);
+    metrics.nSuspect = sum(defectScore >= threshold.normal & ...
+        defectScore < threshold.defect);
+    metrics.nDefect = sum(defectScore >= threshold.defect);
     metrics.judgement = AI_eye_judgement(metrics);
+end
+
+function threshold = AI_get_metric_threshold(settings, eyeName, pointVersion)
+    % 读取当前眼别和当前点位版本对应的点数统计阈值。
+    %
+    % eyeName:
+    %   '左眼'或'右眼'。
+    % pointVersion:
+    %   'point28'或'point54'。
+    %
+    % 输出threshold.normal/threshold.defect用于统计正常点、可疑点和缺损点。
+    % 如果某个字段缺失，会退回到旧版全局阈值，避免旧参数结构报错。
+    versionKey = lower(char(pointVersion));
+    switch versionKey
+        case {'point28', '28'}
+            versionKey = 'point28';
+        case {'point54', 'sap54', '54'}
+            versionKey = 'point54';
+        otherwise
+            error('Unsupported pointVersion for threshold: %s', pointVersion);
+    end
+
+    if contains(char(eyeName), '左')
+        eyeKey = 'left';
+    elseif contains(char(eyeName), '右')
+        eyeKey = 'right';
+    else
+        error('Unsupported eyeName for threshold: %s', eyeName);
+    end
+
+    threshold = struct();
+    if isfield(settings, 'metricThreshold') && ...
+            isfield(settings.metricThreshold, versionKey) && ...
+            isfield(settings.metricThreshold.(versionKey), eyeKey)
+        threshold = settings.metricThreshold.(versionKey).(eyeKey);
+    end
+
+    if ~isfield(threshold, 'normal') || isempty(threshold.normal)
+        threshold.normal = settings.metricNormalThreshold;
+    end
+    if ~isfield(threshold, 'defect') || isempty(threshold.defect)
+        threshold.defect = settings.metricDefectThreshold;
+    end
+
+    if threshold.normal >= threshold.defect
+        error(['Metric threshold error: normal threshold must be smaller ', ...
+            'than defect threshold. pointVersion=%s, eyeName=%s'], ...
+            pointVersion, eyeName);
+    end
 end
 
 function judgement = AI_eye_judgement(metrics)
@@ -1194,13 +1522,18 @@ function AI_add_textbox(fig, pos, txt, fontSize, fontWeight, fontName)
 end
 
 function txt = AI_patient_info_text(patientInfo, ~)
+    % 报告顶部只显示患者基本信息，不显示数据文件夹。
+    % 检测结果由报告底部的结构化结论和右侧指标区体现，不放在患者信息区。
     txt = sprintf(['患者编号：%s    姓名：%s    性别：%s    年龄：%s\n', ...
-        '检查日期：%s    临床诊断：%s    检查人员：%s\n', ...
-        '备注：%s'], ...
+        '检查日期：%s    检查人员：%s'], ...
         AI_get_info(patientInfo, 'patientId'), AI_get_info(patientInfo, 'name'), ...
         AI_get_info(patientInfo, 'sex'), AI_get_info(patientInfo, 'age'), ...
-        AI_get_info(patientInfo, 'examDate'), AI_get_info(patientInfo, 'diagnosis'), ...
-        AI_get_info(patientInfo, 'operator'), AI_get_info(patientInfo, 'notes'));
+        AI_get_info(patientInfo, 'examDate'), AI_get_info(patientInfo, 'operator'));
+
+    notes = strtrim(AI_get_info(patientInfo, 'notes'));
+    if ~isempty(notes) && ~strcmpi(notes, 'None')
+        txt = sprintf('%s\n备注：%s', txt, notes);
+    end
 end
 
 function value = AI_get_info(patientInfo, key)

@@ -165,6 +165,37 @@ function settings = AI_parse_inputs(varargin)
     settings.drawBlindSpot = false;
     settings.blindSpotXY = [15, 0];
     settings.blindSpotRadius = 2.2;
+    % drawBlindSpotDotCluster:
+    %   true表示在54点报告图中用一簇不规则黑点显示生理盲点。
+    %   这个显示不依赖某个具体检测点的数值，只是为了让54点SAP样报告更符合临床习惯。
+    settings.drawBlindSpotDotCluster = false;
+    % blindSpotDotCenterXDeg:
+    %   生理盲点位于单眼颞侧约15度。程序会根据左右眼自动决定正负方向。
+    settings.blindSpotDotCenterXDeg = 15;
+    % blindSpotDotCenterYDeg:
+    %   只显示横轴下方的盲点，对应SAP 24-2样坐标中的y=-3。
+    settings.blindSpotDotCenterYDeg = -3;
+    % blindSpotCoreHalfWidthDeg/blindSpotCoreTopDeg/blindSpotCoreBottomDeg:
+    %   中心近似全黑区域。默认约为x=14到16，y=0到-4。
+    settings.blindSpotCoreHalfWidthDeg = 1.0;
+    settings.blindSpotCoreTopDeg = 0.0;
+    settings.blindSpotCoreBottomDeg = -4.0;
+    % blindSpotInnerGrowDeg/blindSpotOuterGrowDeg:
+    %   在中心区域外分别扩展内边界和外边界，黑点密度逐层降低。
+    settings.blindSpotInnerGrowDeg = 1.0;
+    settings.blindSpotOuterGrowDeg = 2.0;
+    % blindSpotCoreSpacingDeg/blindSpotInnerSpacingDeg/blindSpotOuterSpacingDeg:
+    %   三层黑点候选网格间距。调小会更密，调大更稀疏。
+    settings.blindSpotCoreSpacingDeg = 0.45;
+    settings.blindSpotInnerSpacingDeg = 0.30;
+    settings.blindSpotOuterSpacingDeg = 0.34;
+    % blindSpotInnerDensity/blindSpotOuterDensity:
+    %   边界区域保留黑点的比例。内边界更高，外边界更低。
+    settings.blindSpotInnerDensity = 0.23;
+    settings.blindSpotOuterDensity = 0.12;
+    % blindSpotDotSize:
+    %   生理盲点黑点大小。
+    settings.blindSpotDotSize = 6;
     settings.colorbarLabel = '缺损概率样指标';
     settings.lowClip = 0.10;
     settings.highClip = 0.25;
@@ -749,10 +780,15 @@ function fig = AI_draw_density_map(coordTable, plotValue, titleText, settings)
         'k', 'filled', 'Marker', 'o', ...
         'MarkerFaceAlpha', 1, 'MarkerEdgeAlpha', 1);
 
-    % ==================== 7. 绘制中线并统一坐标轴格式 ====================
+    % ==================== 7. 绘制中线 ====================
     plot(ax, [-lim, lim], [0, 0], 'k-', 'LineWidth', settings.axisLineWidth);
     plot(ax, [0, 0], [-lim, lim], 'k-', 'LineWidth', settings.axisLineWidth);
 
+    % ==================== 8. 仅在54点报告图中叠加生理盲点黑点簇 ====================
+    % 密度图本身已经由黑点组成，这里额外叠加更集中、更不规则的一簇黑点表示盲点。
+    AI_draw_blind_spot_dot_cluster(ax, coordTable, settings);
+
+    % ==================== 9. 统一坐标轴格式 ====================
     AI_style_field_axes(ax, titleText, settings, false);
     hold(ax, 'off');
 end
@@ -872,6 +908,138 @@ function fig = AI_draw_value_map(coordTable, plotValue, titleText, settings)
     % 这里showAxisLabel=false，所以最终图不显示坐标刻度和坐标轴标签。
     AI_style_field_axes(ax, titleText, settings, false);
     hold(ax, 'off');
+end
+
+function AI_draw_blind_spot_dot_cluster(ax, coordTable, settings)
+    % 在54点SAP样报告图中绘制生理盲点渐变黑点。
+    %
+    % 这部分只是“显示层”的处理：
+    %   1) 不读取某个检测点的数值；
+    %   2) 不修改缺损分数；
+    %   3) 不影响VFI、MD、PSD和异常点数量统计。
+    %
+    % 盲点位置：
+    %   生理盲点位于单眼颞侧约15度、略低于水平线。
+    %   左眼视野图中颞侧在左侧，因此X为负；
+    %   右眼视野图中颞侧在右侧，因此X为正。
+    %
+    % 绘图思路：
+    %   以(颞侧15度, -3度)为中心，只画横轴下方这个盲点。
+    %   中心区域黑点极密，近似全黑；向外两层逐渐降低黑点密度，
+    %   最外侧自然过渡回原来的背景点密度。
+
+    if ~settings.drawBlindSpotDotCluster
+        return;
+    end
+
+    % 只在54点SAP样报告图中显示盲点。
+    if height(coordTable) ~= 54
+        return;
+    end
+
+    temporalSign = AI_get_temporal_side_sign(coordTable);
+    centerX = temporalSign * settings.blindSpotDotCenterXDeg;
+    centerY = settings.blindSpotDotCenterYDeg;
+
+    % ==================== 1. 定义中心区、内边界区、外边界区 ====================
+    % core区域参考你的描述：如果盲点坐标是(15,-3)，中心区大致为x=14到16，
+    % y=0到-4。左右眼只改变X方向正负，Y方向保持一致。
+    coreLeft = centerX - settings.blindSpotCoreHalfWidthDeg;
+    coreRight = centerX + settings.blindSpotCoreHalfWidthDeg;
+    coreTop = settings.blindSpotCoreTopDeg;
+    coreBottom = settings.blindSpotCoreBottomDeg;
+
+    innerLeft = coreLeft - settings.blindSpotInnerGrowDeg;
+    innerRight = coreRight + settings.blindSpotInnerGrowDeg;
+    innerTop = coreTop + settings.blindSpotInnerGrowDeg;
+    innerBottom = coreBottom - settings.blindSpotInnerGrowDeg;
+
+    outerLeft = coreLeft - settings.blindSpotOuterGrowDeg;
+    outerRight = coreRight + settings.blindSpotOuterGrowDeg;
+    outerTop = coreTop + settings.blindSpotOuterGrowDeg;
+    outerBottom = coreBottom - settings.blindSpotOuterGrowDeg;
+
+    % ==================== 2. 中心区域：高密度黑点，视觉上接近全黑 ====================
+    [coreX, coreY] = AI_make_blind_spot_grid( ...
+        coreLeft, coreRight, coreBottom, coreTop, ...
+        settings.blindSpotCoreSpacingDeg, 1.00, centerX, centerY);
+    AI_scatter_blind_spot_dots(ax, coreX, coreY, settings);
+
+    % ==================== 3. 内边界区域：中等密度黑点 ====================
+    [innerX, innerY] = AI_make_blind_spot_grid( ...
+        innerLeft, innerRight, innerBottom, innerTop, ...
+        settings.blindSpotInnerSpacingDeg, settings.blindSpotInnerDensity, ...
+        centerX, centerY);
+    innerMask = ~(innerX >= coreLeft & innerX <= coreRight & ...
+        innerY >= coreBottom & innerY <= coreTop);
+    AI_scatter_blind_spot_dots(ax, innerX(innerMask), innerY(innerMask), settings);
+
+    % ==================== 4. 外边界区域：低密度黑点，逐渐过渡回背景 ====================
+    [outerX, outerY] = AI_make_blind_spot_grid( ...
+        outerLeft, outerRight, outerBottom, outerTop, ...
+        settings.blindSpotOuterSpacingDeg, settings.blindSpotOuterDensity, ...
+        centerX, centerY);
+    outerMask = ~(outerX >= innerLeft & outerX <= innerRight & ...
+        outerY >= innerBottom & outerY <= innerTop);
+    AI_scatter_blind_spot_dots(ax, outerX(outerMask), outerY(outerMask), settings);
+end
+
+function [dotX, dotY] = AI_make_blind_spot_grid(leftX, rightX, bottomY, topY, ...
+        spacingDeg, keepDensity, centerX, centerY)
+    % 生成某一层盲点黑点候选网格，并用稳定的伪随机规则保留部分点。
+    %
+    % keepDensity:
+    %   1表示全部保留；0.5表示约保留一半。
+    %   使用AI_hash_grid_value而不是rand，是为了每次生成报告时盲点形状一致。
+
+    xGrid = leftX:spacingDeg:rightX;
+    yGrid = bottomY:spacingDeg:topY;
+    [X, Y] = meshgrid(xGrid, yGrid);
+
+    % 轻微扰动网格位置，避免盲点边界看起来过于机械。
+    hashA = AI_hash_grid_value(X + centerX * 0.13, Y + centerY * 0.19);
+    hashB = AI_hash_grid_value(X + centerX * 0.31, Y + centerY * 0.37);
+    jitterScale = spacingDeg * 0.28;
+    X = X + (hashA - 0.5) .* jitterScale;
+    Y = Y + (hashB - 0.5) .* jitterScale;
+
+    keepHash = AI_hash_grid_value(X + 3.17, Y - 2.41);
+    keepMask = keepHash <= keepDensity;
+
+    dotX = X(keepMask);
+    dotY = Y(keepMask);
+end
+
+function AI_scatter_blind_spot_dots(ax, dotX, dotY, settings)
+    % 把某一层盲点黑点画到当前坐标轴上。
+    if isempty(dotX)
+        return;
+    end
+
+    scatter(ax, dotX, dotY, settings.blindSpotDotSize, ...
+        'k', 'filled', 'Marker', 'o', ...
+        'MarkerFaceAlpha', 1, 'MarkerEdgeAlpha', 1, ...
+        'Clipping', 'on');
+end
+
+function temporalSign = AI_get_temporal_side_sign(coordTable)
+    % 判断当前单眼视野图的颞侧在左边还是右边。
+    %
+    % 当前54点SAP样坐标中：
+    %   左眼鼻侧额外延伸到 +27度，因此左眼颞侧是负X；
+    %   右眼鼻侧额外延伸到 -27度，因此右眼颞侧是正X。
+    % 如果以后坐标表发生变化，这里会优先根据±27度鼻侧延伸点判断。
+
+    xCoord = coordTable.vfXDeg;
+    if any(xCoord > 25)
+        temporalSign = -1;
+    elseif any(xCoord < -25)
+        temporalSign = 1;
+    else
+        % 理论上54点图一定会有±27度鼻侧延伸点。
+        % 这里作为后备策略，避免特殊坐标输入时程序报错。
+        temporalSign = 1;
+    end
 end
 
 function AI_style_field_axes(ax, titleText, settings, showAxisLabel)

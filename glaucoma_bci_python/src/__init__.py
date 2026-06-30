@@ -1,0 +1,1 @@
+"""Glaucoma BCI Python package."""

@@ -1,0 +1,31 @@
+# 通用默认配置。
+# 后续模拟实验、foldNum 比较和算法测试可以优先使用这个配置。
+
+project:
+  result_root: "D:/0课题/青光眼/结果_python"
+  log_dir: "D:/0课题/青光眼/data_processing-20/glaucoma_bci_python/logs"
+
+eeg:
+  fs_original: 1000
+  fs: 250
+  t_start: 0.0
+  t_end: 0.45
+  wn_para: [0.5, 2, 20, 30]
+  chan_list: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
+
+dcpm:
+  component_num: 8
+  cross_num: 10
+  fold_num: 4
+  prob_mean_block_size: 5
+
+clinical:
+  train_trial_total: 480
+  test_trial_total: 360
+  train_trial_num: 120
+  test_trial_num: 60
+  temp_type:
+    - [1, 2]
+    - [2, 1]
+    - [3, 4]
+    - [4, 3]

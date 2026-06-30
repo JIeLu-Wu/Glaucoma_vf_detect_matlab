@@ -1,0 +1,23 @@
+# 临床报告配置。
+# 平时生成单个患者报告时，优先修改这里的数据路径。
+
+data:
+  data_dir: "D:/0课题/青光眼/data/临床实验/260617丁艳荣"
+  result_root: "D:/0课题/青光眼/结果_python"
+  existing_result_dir: ""
+  patient_info_file: "info.xlsx"
+
+report:
+  output_parent_name: "AI_SAP_like_clinical_report"
+  save_point28_report: true
+  save_point54_report: true
+
+metric_threshold:
+  point28:
+    left:  {normal: 0.10, defect: 0.20}
+    right: {normal: 0.10, defect: 0.20}
+  point54:
+    left:  {normal: 0.10, defect: 0.20}
+    right: {normal: 0.10, defect: 0.20}
+
+include: "default_config.yaml"

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 结果和日志默认不纳入版本管理，但保留目录结构。
+logs/*.log
+results/clinical_reports/*
+results/simulation_accuracy/*
+results/intermediate/*
+!results/clinical_reports/.gitkeep
+!results/simulation_accuracy/.gitkeep
+!results/intermediate/.gitkeep

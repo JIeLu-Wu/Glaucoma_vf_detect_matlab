@@ -1,6 +1,6 @@
 function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
 % 生成类似SAP视野检查的客观视野报告。
-%
+% 
 % 本脚本的主流程：
 %   1. 设置分析参数和输出路径；
 %   2. 读取患者信息；
@@ -20,7 +20,7 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
     % defaultDataDir:
     %   当前要生成报告的患者数据文件夹。
     %   换患者时，通常只需要把这一行改成新的临床实验文件夹。
-    defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260618薛娜';
+    defaultDataDir = 'D:\0课题\青光眼\data\临床实验\260629王胜春';
 
     % defaultResultDir:
     %   所有报告结果的总保存文件夹。
@@ -109,14 +109,16 @@ function result = AI_generate_sap_like_clinical_report(dataDir, varargin)
         'drawColorbar', false, ...
         'showFigure', false);
 
-    % ==================== 6. 绘制左右眼视野图 ====================
-    % 这里直接把54点缺损分数传给绘图脚本。
-    % 这样报告图、VFI/MD和正常/可疑/缺损点数使用的是同一套54点结果。
+    % ==================== 6.2 绘制左右眼54点视野图 ====================
+    % 这里仍然传入真实的54点缺损分数，不人为修改任何检测点数值。
+    % 生理盲点只在AI_plot_sap_like_vf_report内部作为一簇黑点叠加显示，
+    % 因此不会影响VFI、MD、PSD、点数统计，也不会写入Excel/MAT结果。
     mapResult54 = AI_plot_sap_like_vf_report(eyeResult.defectScore54, ...
         'outputDir', mapDir54, ...
         'filePrefix', [settings.filePrefix, '_point54'], ...
         'inputPointMode', 'sap54', ...
         'inputValueType', 'defectScore', ...
+        'drawBlindSpotDotCluster', true, ...
         'leftTitle', '左眼视野灰阶图（54点）', ...
         'rightTitle', '右眼视野灰阶图（54点）', ...
         'leftDensityTitle', '左眼密度图（54点）', ...
@@ -260,9 +262,9 @@ function settings = AI_report_settings(defaultDataDir, defaultResultDir, existin
     % ==================== 报告判读阈值 ====================
     % normalSensitivity/suspectSensitivity/severeSensitivity:
     % 目前主要保留为后续扩展用。当前左右眼判断主要由VFI阈值完成。
-    settings.normalSensitivity = 80;
+    settings.normalSensitivity = 90;
     settings.suspectSensitivity = 50;
-    settings.severeSensitivity = 20;
+    settings.severeSensitivity = 0;
 
     % ==================== 指标点数统计阈值 ====================
     % 每一组阈值都包含normal和defect两个参数：
@@ -1235,7 +1237,12 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
     metrics.pointCount = numel(sensitivity);
     metrics.normalThreshold = threshold.normal;
     metrics.defectThreshold = threshold.defect;
-    metrics.VFI = AI_round4(mean(sensitivity, 'omitnan'));
+    % VFI使用缺损分数扣分算法计算：
+    %   defectScore < 正常阈值：该点不扣分；
+    %   正常阈值 <= defectScore < 缺损阈值：按比例扣分；
+    %   defectScore >= 缺损阈值：该点扣掉完整点位分数。
+    % dotScore = 100 / N，因此28点和54点都可以统一映射到0-100分。
+    metrics.VFI = AI_round4(AI_vfi_from_defect_score(defectScore, threshold));
     metrics.MD = AI_round4(mean(pointDb, 'omitnan'));
     metrics.PSD = AI_round4(std(pointDb, 1, 'omitnan'));
     metrics.nNormal = sum(defectScore < threshold.normal);
@@ -1243,6 +1250,45 @@ function metrics = AI_one_eye_metrics(sensitivity, defectScore, eyeName, pointVe
         defectScore < threshold.defect);
     metrics.nDefect = sum(defectScore >= threshold.defect);
     metrics.judgement = AI_eye_judgement(metrics);
+end
+
+function VFI = AI_vfi_from_defect_score(defectScore, threshold)
+    % 根据缺损分数计算VFI。
+    %
+    % 输入：
+    %   defectScore:
+    %       N x 1缺损概率样分数。数值越大，表示越可能异常。
+    %   threshold.normal:
+    %       正常阈值。低于该阈值时alpha=0，不扣分。
+    %   threshold.defect:
+    %       缺损阈值。高于该阈值时alpha=1，扣除完整点位分数。
+    %
+    % 输出：
+    %   VFI:
+    %       0-100之间的视野功能指数。
+
+    defectScore = defectScore(:);
+    validIdx = isfinite(defectScore);
+    validDefectScore = defectScore(validIdx);
+
+    if isempty(validDefectScore)
+        VFI = NaN;
+        return;
+    end
+
+    pointCount = numel(validDefectScore);
+    dotScore = 100 / pointCount;
+
+    alpha = zeros(pointCount, 1);
+    alpha(validDefectScore >= threshold.defect) = 1;
+
+    middleIdx = validDefectScore >= threshold.normal & ...
+        validDefectScore < threshold.defect;
+    alpha(middleIdx) = (validDefectScore(middleIdx) - threshold.normal) ./ ...
+        (threshold.defect - threshold.normal);
+
+    VFI = 100 - sum(alpha) * dotScore;
+    VFI = max(0, min(100, VFI));
 end
 
 function threshold = AI_get_metric_threshold(settings, eyeName, pointVersion)
